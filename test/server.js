@@ -3,7 +3,7 @@ require('core.JSON');
 export('testCase');
 var config = require("config/test");
 
-include("coucher");
+include("padded");
 var couch = new Couch(config.options);
 
 var testCase = new TestCase('server'); 

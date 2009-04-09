@@ -179,11 +179,16 @@ function Couch(options) {
 				var views = {};
 				views[vname] = funcs;
 				var design_id = "_design/"+dname;
-				var doc = _db.get(design_id);
-				// view available ? 
-				if (doc && doc.views && doc.views[vname] 
-					&& doc.views[vname].toJSON() == views[vname].toJSON()) 
-					return this;
+				try {
+					var doc = _db.get(design_id);
+					// view available ? 
+					if (doc && doc.views && doc.views[vname] 
+						&& doc.views[vname].toJSON() == views[vname].toJSON()) 
+						return this;
+				} catch(err) {
+					if (err.constructor != CouchDbError && err.error != 'not_found') 
+						throw err;
+				}
 				var design = (function() { 
 					if (doc) {
 						doc.views = Object.merge(doc.views, views, true);
@@ -216,37 +221,62 @@ function Couch(options) {
 				var url = new java.net.URL(_view_url + encodeOptions(options));
 				var conn = url.openConnection();
 				conn.setRequestMethod('GET');
-				var input;
-				try {
-					input = new java.io.BufferedInputStream(conn.getInputStream());
-				} catch (error) {
-					input = new java.io.BufferedInputStream(conns.getErrorStream());
-				}
+				var input = conn.getInputStream();
 				var jsonFactory = new org.codehaus.jackson.JsonFactory();
 				var parser = jsonFactory.createJsonParser(input);
 				var T = org.codehaus.jackson.JsonToken
-				//
-				return Iterator({
-					__iterator__: function() {
-						var token = parser.nextToken();
-						if (token  != T.START_OBJECT) 
-							throw StopIteration;
-						while (parser.nextToken() != T.START_ARRAY) {
-						}
-						while (parser.nextToken() != T.END_ARRAY) {
-							while (parser.nextToken() != T.END_OBJECT) {
-	
-								//token = jsonParser.nextToken();
-								print("###"+parser.getCurrentName()+"="+jsonParser.getText());
-								
-								if (token) 
-									yield token;	
+				var _fill = function(token, i, obj) {
+					switch(token) {
+						case T.VALUE_TRUE: obj[i] = true; break;
+						case T.VALUE_FALSE: obj[i] = false; break;
+						case T.VALUE_NULL: obj[i] = null; break;
+						case T.VALUE_NUMBER_INT: obj[i] = parser.getIntValue();
+						case T.VALUE_NUMBER_FLOAT: obj[i] = parser.getFloatValue();
+						case T.VALUE_STRING: obj[i] = parser.getText(); break;
+					};
+				};
+				var _info = {};
+				var streamer = Iterator({
+						__iterator__: function() {
+							var token = parser.nextToken();
+							if (token  != T.START_OBJECT) 
+								throw StopIteration;
+							while (parser.nextToken() != T.START_ARRAY) {
+								var token = parser.getCurrentToken();
+								var i = ( token == T.FIELD_NAME) ? parser.getCurrentName() : i;
+								if ( token == T.FIELD_NAME) continue;
+								_fill(token,i,_info);
 							}
-							print("---------------------------");
+							while (parser.nextToken() != T.END_ARRAY) {
+								var doc = {};
+								var walk = function(obj) {
+									var obj = obj || {};
+									do {
+										var token = parser.nextToken();
+										var i = (function() {
+											return (obj.constructor == Array)
+											 ?  obj.length
+											 : (( token == T.FIELD_NAME && obj.constructor == Object) ? parser.getCurrentName() : i )
+										})();
+										if ( token == T.FIELD_NAME) continue;
+										switch(token) {
+											case T.START_ARRAY: obj[i] = walk(new Array()); break;
+											case T.START_OBJECT: obj[i] = walk(new Object()); break;
+											case T.END_ARRAY: case T.END_OBJECT:
+												return obj; break;
+											default: 
+												_fill(token, i, obj);
+										}
+									} while(token);
+								};
+								yield new Document(walk());
+							}
+							input.close();
 						}
-						input.close();
-					}
 				});
+				streamer.__defineGetter__('totalRows', function() { return _info.total_rows; });
+				streamer.__defineGetter__('offset', function() { return _info.offset; });
+				return streamer;
 			};
 			
 			this.fetchPagable = function(docs_per_page, firstkey_docid, firstkey, lastkey) {
@@ -392,7 +422,8 @@ function Couch(options) {
 						return _db.saveDoc(doc, true);
 					}
 				}
-				(bind(block,tx))(tx);
+				var fn = bind(block,tx);
+				fn();
 				_db.bulkCommit();
 			} catch(ex) {
 				print(ex);
@@ -407,7 +438,6 @@ function Couch(options) {
 					return this.bulkSave(); 
         return { ok: true };
       } 
-			
 			var method = (doc._id == undefined) ? 'POST' : 'PUT';
 			h.setMethod(method);
 			h.setContent(doc.toJSON());
@@ -627,27 +657,37 @@ var couch = new Couch();
 //var info = couch.info();
 //var cfg = couch.config();
 
-
-
 var db = couch.db('test');
+db.drop();
 try {
 	db.create();
-	db.transaction(function(tx) {
+	db.transaction(function() {
+		var tx = this;
 		Array.every("ABCDEFGHIJKLMNOPQRSTUVWXYZ", function(c) {				
-			return tx.saveDoc({ character: c }, true);
+				return tx.saveDoc({
+					character: c, 
+				}, true);
 		});
 	});
-} catch(ex) {}
+} catch(ex) {
+	print("error:"+ex.error + "# reason:"+ex.reason);
+}
 
 var view = db.view('chars/by_char').create({
 		map: function(doc) {
-			emit(doc.character, doc._id);
+			emit(doc.character, doc);
 		}
 });
 
+var streamer = view.fetchStreamed();
+for each (let doc in streamer) {
+	print(doc);
+}
+
+
 
 // test2
-(function() {
+function() {
 
 var pager = view.fetchPagable(2);
 
@@ -664,7 +704,7 @@ for each (let chars in pager) {
 	}
 }
 
-})();
+}
 // test3
 
 function() {
@@ -697,13 +737,6 @@ function() {
 	if (pager.hasPrevious()) prevPage();// E,F
 	*/
 };
-
-function() {
-	var streamer = view.fetchStreamed();
-	for each (let token in streamer) {
-		//print(token);
-	}
-}
 
 /*
 db.view('docs/test').create({
