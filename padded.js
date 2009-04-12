@@ -38,21 +38,25 @@ function Couch(options) {
 		print("Response code:"+res.code);
 		print("Response content:"+res.content);
 		print("----------------------");*/
-		if (res.code==404) return null;
+		//if (res.code==404) return null;
 		var result = res.content.parseJSON();
-		if (res.code != ok) 
-			throw new CouchDbError(result['error'], result['reason'] ); 
+		if (res.code != ok) {
+			if (result && result['error'])
+				throw new CouchDbError(result['error'], result['reason'] );
+		}
 		return result;
 	}
 	
 	this.info = function() {
 		h.setMethod('GET');
+		h.setContent(null);
 		var res = h.getUrl(server);
 		return response(res, 200);
 	};
 	
 	this.config = function() {
 		h.setMethod('GET');
+		h.setContent(null);
 		var res = h.getUrl(server+'/_config');
 		return response(res, 200);
 	};
@@ -63,6 +67,7 @@ function Couch(options) {
 	
 	this.databases = function() {
 		h.setMethod('GET');
+		h.setContent(null);
 		var res = h.getUrl(server+'/_all_dbs');
 		return response(res,200);
 	};
@@ -78,6 +83,7 @@ function Couch(options) {
 		var count = count || opt['uuid_batch_count'];
 		if (_uuids.length == 0) {
 			h.setMethod('GET');
+			h.setContent(null);
 			var res = h.getUrl(server+'/_uuids'+ encodeOptions({count: count}));
 			var result = response(res, 200);
 			if (!result['uuids']) 
@@ -89,6 +95,7 @@ function Couch(options) {
 	
 	this.createDb = function(name) {
 		h.setMethod('PUT');
+		h.setContent(null);
 		var res = h.getUrl(server+'/'+name);
 		var result = response(res, 201);
 		if (result['ok'])
@@ -98,6 +105,7 @@ function Couch(options) {
 	
 	this.restart = function() {
 		h.setMethod('POST');
+		h.setContent(null);
 		var res = h.getUrl(server+'/_restart');
 		return response(res, 200);
 	};
@@ -269,7 +277,7 @@ function Couch(options) {
 										}
 									} while(token);
 								};
-								yield new Document(walk());
+								yield new View.ResultRow(walk());
 							}
 							input.close();
 						}
@@ -353,14 +361,26 @@ function Couch(options) {
 				return new Pager(firstkey, firstkey_docid);
 			}; // end fetchPaged
 			
+			View.ResultRow = function(row) {
+				this.id = function() { return row.id; }
+				this.key = function() { return row.key; }
+				this.doc = function() {
+					return new Document(row.value);
+				};
+				this.toString = function() {
+					return row.toJSON();
+				};
+			};
+			
 			View.ResultSet = function(result) {
 				this.hasRows = function() { return (result.rows && result.rows.length>0); };
 				this.count = function() { return result.total_rows; };
 				this.offset = function() { return result.offset;  };
 				
 				this.__iterator__ = function() {
-					for ( let i = 0; i < result.rows.length; i++ )
-						yield new Document(result.rows[i]);
+					for ( let i = 0; i < result.rows.length; i++ ) {
+						yield new View.ResultRow(result.rows[i]);
+					}
 				};
 				
 				this.toString = function() {
@@ -392,27 +412,36 @@ function Couch(options) {
 			};
 		};
 		
-		
 		this.name = function() {
 			return name;
 		};
 		
 		this.info = function() {
 			h.setMethod('GET');
+			h.setContent(null);
 			var res = h.getUrl(_url);
 			return response(res, 200);
 		};
 		
 		this.create = function() {
 			h.setMethod('PUT');
+			h.setContent(null);
 			var res = h.getUrl(_url);
-			return response(res, 201);
+			var result = response(res, 201);
+			if (result['ok'])
+				return this;
+			return result;
 		};
 		
 		this.drop = function() {
 			h.setMethod('DELETE');
+			h.setContent(null);
 			var res = h.getUrl(_url);
-			return response(res, 200);
+			try {
+				return response(res, 200);
+			} catch(err) {
+				return false;
+			}
 		};
 			
 		this.transaction = function(block) {
@@ -456,6 +485,7 @@ function Couch(options) {
 		this.get = function(doc_id, options) {
 			doc_id += ''; 
 			h.setMethod('GET');
+			h.setContent(null);
 			var res = h.getUrl(_url+ '/'+encodeURIComponent(doc_id) + encodeOptions(options));
 			var result = response(res, 200);
 			return (result && result['_id']) ? new Document(result) : result;
@@ -475,6 +505,7 @@ function Couch(options) {
 		this.compact = function() {
 			h.setMethod('POST');
 			h.setHeader('Content-Type','application/json');
+			h.setContent(null);
 			var res = h.getUrl(_url+'/_compact');
 			return response(res, 202);
 		};
@@ -489,6 +520,7 @@ function Couch(options) {
 			}
 			
 			h.setMethod('DELETE');
+			h.setContent(null);
 			var res = h.getUrl(_url+ '/'+encodeURIComponent(doc._id) + "?rev=" + doc._rev);
 			var result = response(res, 200);
 			doc._rev = result.rev;
@@ -645,157 +677,6 @@ function Couch(options) {
 	}
 }
 
-
-
-
 if (__name__ == "__main__") {
-	
-var couch = new Couch();
-
-//var dbs = couch.databases();
-//print(dbs.toJSON());
-//var info = couch.info();
-//var cfg = couch.config();
-
-var db = couch.db('test');
-db.drop();
-try {
-	db.create();
-	db.transaction(function() {
-		var tx = this;
-		Array.every("ABCDEFGHIJKLMNOPQRSTUVWXYZ", function(c) {				
-				return tx.saveDoc({
-					character: c, 
-				}, true);
-		});
-	});
-} catch(ex) {
-	print("error:"+ex.error + "# reason:"+ex.reason);
 }
 
-var view = db.view('chars/by_char').create({
-		map: function(doc) {
-			emit(doc.character, doc);
-		}
-});
-
-var streamer = view.fetchStreamed();
-for each (let doc in streamer) {
-	print(doc);
-}
-
-
-
-// test2
-function() {
-
-var pager = view.fetchPagable(2);
-
-for each (let chars in pager) {
-	
-	//var chars = pager.next();
-	print("-----------------------");
-	print(chars);
-	for each (let c in chars)
-		print(c.key);
-	if (pager.hasNext()) {
-		print("nextStartKey:"+chars.nextStartkey());
-		print("nextStartkeyDocId:"+chars.nextStartkeyDocId());	
-	}
-}
-
-}
-// test3
-
-function() {
-	var nextPage = function() {
-		var chars = pager.next();	
-		for each (let c in chars)
-			print(c.key);
-	}
-	var prevPage = function() {
-		var chars = pager.previous();	
-		for each (let c in chars)
-			print(c.key);
-	}
-	
-	while(true) {
-		try {
-			chars = pager.next();
-			for each (let c in chars)
-				print(c.key);
-		} catch(ex) { break; }
-	}
-	/*nextPage(); //A,B
-	nextPage(); // C,D
-	prevPage(); // A,B
-	nextPage(); // C,D,
-	prevPage(); // A,B
-	nextPage(); // C,D
-	nextPage(); // E,F
-	nextPage(); // G,H
-	if (pager.hasPrevious()) prevPage();// E,F
-	*/
-};
-
-/*
-db.view('docs/test').create({
-		map: function(doc) {
-			emit(doc._id, doc);
-		}
-})
-db.view('docs/all').create({
-		map: function(doc) {
-			emit(doc._id, doc);
-		}
-});*/
-
-/*var test = db.slowView({
-		map: function(doc) {
-			emit(doc._id, 1)
-		}
-}); 
-print(test);*/
-//var doc = db.get('2');
-//print(doc.revisions());
-
-//var links = db.view('links/by_url', {key: "http://280slides.com"} );
-
-/*var links = db.view('links/by_url').fetch( {limit: 1} );
-for each (let doc in links) {
-	print(doc);
-}*/
-
-//print (links);
-//var doc = db.open("0034545d9d14fb202522c6c959be8e27");
-//var doc = db.get("0034545d9d14fb202522c6c959be8e27");
-//print(doc.uri());
-
-//var docs = db.openDocs(["1","2"]);
-//print(docs);
-//var doc = db.open("1");
-//var file = new File('../PrettyDate.html');
-//var res = db.attach(doc,file);
-//var res = db.detach(doc,'PrettyDate.html');
-
-//db.view('links/tags', {limit:10, group: true});
-/*db.save({
-		_id: "2",
-		data: "blahhh blahh"
-});*/
-
-/*var res = db.bulkSave([
-	{"wild":  "and random"},
-	{"mild": "yet local"},
-	{"another": ["set","of","keys"]}
-]);*/
-
-
-
-//var doc = db.open("1");
-//db.deleteDoc(doc);
-
-//db.createDb();
-//db.deleteDb();
-//db.getAllDatabases();
-} 
