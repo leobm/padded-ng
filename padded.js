@@ -8,7 +8,7 @@ include('helma.functional');
 
 addToClasspath('lib/jackson-core-lgpl-0.9.9-3.jar');
 
-export("Couch");
+export("Couch", "CouchDbError");
 
 var CouchDbError = function(error, reason) {
 	this.__defineGetter__("error", function() {
@@ -472,6 +472,7 @@ function Couch(options) {
 			if (result['ok']) {
 				doc._id = result.id;
 				doc._rev = result.rev;
+				return new Document(doc);
 			}
 			return result;
 		};
@@ -490,7 +491,7 @@ function Couch(options) {
 				include_docs: 'true'
 			});
 			h.setMethod('POST');
-			h.setHeader('Content-Type','application/json');			
+			h.setHeader('Content-Type','application/json');
 			h.setContent({ keys: doc_ids }.toJSON());
 			var res = h.getUrl(_url+'/_all_docs' + encodeOptions(options));
 			return response(res, 200);
@@ -672,5 +673,6 @@ function Couch(options) {
 }
 
 if (__name__ == "__main__") {
+
 }
 
