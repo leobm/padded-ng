@@ -63,11 +63,9 @@ var view = db.view('chars/by_char').create({
 });
 
 // fetch all
-var result_set = view.fetchAll();
-for each(let result_row in result_set) {
-	var doc = result_row.doc();
-	print(doc.uri());
-	print(doc);
+var chars_set = view.fetchAll();
+for each(let c in chars_set) {
+	print(c);
 };
 
 // fetch paged
@@ -75,8 +73,8 @@ for each(let result_row in result_set) {
 var pager = view.fetchPagable(2);
 
 for each (let chars_set in pager) {
-	for each (let char_row in chars_set)
-		print(char_row.doc());
+	for each (let c in chars_set)
+		print(c);
 		
 	print("nextStartKey:"+chars_set.nextStartkey());
 	print("nextStartkeyDocId:"+chars_set.nextStartkeyDocId());	
@@ -85,7 +83,7 @@ for each (let chars_set in pager) {
 
 // fetch streamed
 var streamer = view.fetchStreamed();
-for each (let result_row in streamer) {
-	print(result_row);
+for each (let c in streamer) {
+	print(c);
 }
 </pre>

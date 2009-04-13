@@ -360,18 +360,12 @@ function Couch(options) {
 				
 				return new Pager(firstkey, firstkey_docid);
 			}; // end fetchPaged
-			
 			View.ResultRow = function(row) {
-				this.id = function() { return row.id; }
-				this.key = function() { return row.key; }
-				this.doc = function() {
-					return new Document(row.value);
-				};
 				this.toString = function() {
 					return row.toJSON();
 				};
+				return Object.merge(row,this);
 			};
-			
 			View.ResultSet = function(result) {
 				this.hasRows = function() { return (result.rows && result.rows.length>0); };
 				this.count = function() { return result.total_rows; };
