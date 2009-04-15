@@ -70,7 +70,7 @@ for each(let c in chars_set) {
 
 // fetch paged
 
-var pager = view.fetchPagable(2);
+var pager = view.fetchPageable(2);
 
 for each (let chars_set in pager) {
 	for each (let c in chars_set)

@@ -1,5 +1,5 @@
 include("helma/unittest");
-require('core.JSON');
+require('core/JSON');
 export('testCase');
 var config = require("config/test");
 

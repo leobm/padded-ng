@@ -1,10 +1,10 @@
-require('core.object');
-require('core.string');
-require('core.JSON');
+require('core/object');
+require('core/string');
+require('core/JSON');
 include('core/json2');
 require('helper');
-include('helma.file');
-include('helma.functional');
+include('helma/file');
+include('helma/functional');
 
 addToClasspath('lib/jackson-core-lgpl-0.9.9-3.jar');
 
@@ -29,7 +29,7 @@ function Couch(options) {
 	var server = "http://"+opt.host+":"+opt.port;
 	var _uuids = [];
 	
-	import('helma.httpclient');
+	import('helma/httpclient');
 	var h = new helma.httpclient.Client();
   var couch = this;
 	
@@ -119,58 +119,60 @@ function Couch(options) {
 		});
 		
 		var Document = function(doc) {
-
-			return Object.merge({
-				isNew: function() {
-					return (typeof this._rev == 'undefined');
-				},
-				id: function() { return this._id || null; },
-				rev: function() { return this._rev || null; },
-				save: function(bulk) {
-					return _db.saveDoc(this, bulk || false);
-				},
-				destroy: function(bulk) {
-					return _db.deleteDoc(this, bulk || false);
-				},
-				uri: function(append_rev) {
-					var append_rev = append_rev || false;
-					if(this.isNew()) return null;
-					var uri = _url+'/'+encodeURIComponent(this._id);
-					if (append_rev)
-						uri += encodeOptions({
-							rev: (typeof append_rev == 'boolean') ? this.rev() : append_rev
-						});
-					return uri;
-				},
-				attachment: function() {
-					
-				},
-				attach: function(file, options) {
-					return _db.attachFile(this, file, options);
-				},
-				detach: function() {
-				},
-				revisions: function() {
-					return (this._revs_info) 
-						? this._revs_info 
-						: (bind(function() {
-							var doc = _db.get(this.id(), {revs_info: 'true' });
-							return (doc && doc.constructor == Document)
-							? this.revisions() : null;
-						},this))();
-				},
-			  rollback: function() {
-					var revs = this.revisions();
-					if (revs && revs.constructor == Array) {
-						
-					}	
-				},
-				toString: function() {
-					return this.toJSON();
-				}
-			}, doc);
+			this.toString = function() {
+				return this.toJSON();
+			};
+			this.__noSuchMethod__ = function(name, args) {
+				return Document.prototype[name].apply(this, args);
+			};
+			return Object.merge(this, doc);
 		};
-		
+		Document.prototype = {
+			isNew: function() {
+				return (typeof this._rev == 'undefined');
+			},
+			id: function() { return this._id || null; },
+			rev: function() { return this._rev || null; },
+			save: function(bulk) {
+				return _db.saveDoc(this, bulk || false);
+			},
+			destroy: function(bulk) {
+				return _db.deleteDoc(this, bulk || false);
+			},
+			uri: function(append_rev) {
+				var append_rev = append_rev || false;
+				if(this.isNew()) return null;
+				var uri = _url+'/'+encodeURIComponent(this._id);
+				if (append_rev)
+					uri += encodeOptions({
+						rev: (typeof append_rev == 'boolean') ? this.rev() : append_rev
+					});
+				return uri;
+			},
+			attachment: function() {
+				
+			},
+			attach: function(file, options) {
+				return _db.attachFile(this, file, options);
+			},
+			detach: function() {
+			},
+			revisions: function() {
+				return (this._revs_info) 
+					? this._revs_info 
+					: (bindThisObject(function() {
+						var doc = _db.get(this.id(), {revs_info: 'true' });
+						return (doc && doc.constructor == Document)
+						? this.revisions() : null;
+					},this))();
+			},
+			rollback: function() {
+				var revs = this.revisions();
+				if (revs && revs.constructor == Array) {
+					
+				}	
+			}
+		};
 		
 		var View = function(name) {
 			
@@ -209,8 +211,8 @@ function Couch(options) {
 						};
 					}
 				})();
-				var result = _db.saveDoc(design);	
-				return (result && result['ok']) ? this : result;
+				var result = _db.saveDoc(design);
+				return (result.constructor == Document) ? this : result;
 			};
 			
 			this.fetchAll = function(options) {
@@ -287,7 +289,7 @@ function Couch(options) {
 				return streamer;
 			};
 			
-			this.fetchPagable = function(docs_per_page, firstkey_docid, firstkey, lastkey) {
+			this.fetchPageable = function(docs_per_page, firstkey_docid, firstkey, lastkey) {
 				var _view = this;
 				
 				var Pager = function(startkey, startkey_docid) {
@@ -360,6 +362,7 @@ function Couch(options) {
 				
 				return new Pager(firstkey, firstkey_docid);
 			}; // end fetchPaged
+			
 			View.ResultRow = function(row) {
 				this.toString = function() {
 					return row.toJSON();
@@ -445,7 +448,7 @@ function Couch(options) {
 						return _db.saveDoc(doc, true);
 					}
 				}
-				var fn = bind(block,tx);
+				var fn = bindThisObject(block,tx);
 				fn();
 				_db.bulkCommit();
 			} catch(ex) {
