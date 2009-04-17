@@ -2,7 +2,8 @@ require('core/object');
 require('core/string');
 require('core/JSON');
 include('core/json2');
-require('helper');
+include('js/helper');
+include('js/rest');
 include('helma/file');
 include('helma/functional');
 
@@ -19,45 +20,42 @@ var CouchDbError = function(error, reason) {
 	})
 	return Object.merge(this, new Error(reason));
 };
-	
+
 function Couch(options) {
 	var opt = Object.merge(options || {}, {
 		host: 'localhost',
 		port: 5984,
 		uuid_batch_count: 100
 	});
-	var server = "http://"+opt.host+":"+opt.port;
+	
+  var _couch = this;
 	var _uuids = [];
 	
-	import('helma/httpclient');
-	var h = new helma.httpclient.Client();
-  var couch = this;
+	var rest_client = new RestClient();
+	var server = rest_client.resource("http://"+opt.host+":"+opt.port);
 	
-	var response =function(res, ok) {
+	var response = function(res, ok) {
 		/*print("----------------------");
 		print("Response code:"+res.code);
 		print("Response content:"+res.content);
 		print("----------------------");*/
-		//if (res.code==404) return null;
-		var result = res.content.parseJSON();
-		if (res.code != ok) {
-			if (result && result['error'])
-				throw new CouchDbError(result['error'], result['reason'] );
-		}
+		try {
+			var result = res.content.parseJSON();
+		} catch (ParseError) {
+			throw new CouchDbError("unknown", res.content);
+		};
+		if (res.code != ok && result && result['error']) 
+			throw new CouchDbError(result['error'], result['reason'] );
 		return result;
 	}
 	
 	this.info = function() {
-		h.setMethod('GET');
-		h.setContent(null);
-		var res = h.getUrl(server);
+		var res = server.$get();
 		return response(res, 200);
 	};
 	
 	this.config = function() {
-		h.setMethod('GET');
-		h.setContent(null);
-		var res = h.getUrl(server+'/_config');
+		var res = server.$get('/_config');
 		return response(res, 200);
 	};
 	
@@ -66,25 +64,22 @@ function Couch(options) {
 	};
 	
 	this.databases = function() {
-		h.setMethod('GET');
-		h.setContent(null);
-		var res = h.getUrl(server+'/_all_dbs');
+		var res = server.$get('/_all_dbs');
 		return response(res,200);
 	};
 	
 	this.replicate = function(source, target, options) {
-		h.setMethod('POST');
-		h.setHeader('Content-Type','application/json');
-		h.setContent({source: source, target: target }.toJSON());
+		var res = server.$post('/_replicate', {
+			content: {source: source, target: target }.toJSON(),
+			headers: {'Content-Type': 'application/json' }
+		});
 		return response(res, 200);
 	};
 	
 	this.nextUUID = function(count) {
 		var count = count || opt['uuid_batch_count'];
 		if (_uuids.length == 0) {
-			h.setMethod('GET');
-			h.setContent(null);
-			var res = h.getUrl(server+'/_uuids'+ encodeOptions({count: count}));
+			var res = server.$get('/_uuids'+ params({count: count}));
 			var result = response(res, 200);
 			if (!result['uuids']) 
 				return result;
@@ -94,9 +89,7 @@ function Couch(options) {
 	}
 	
 	this.createDb = function(name) {
-		h.setMethod('PUT');
-		h.setContent(null);
-		var res = h.getUrl(server+'/'+name);
+		var res = server.$put('/'+name);
 		var result = response(res, 201);
 		if (result['ok'])
 			return this.db(name);
@@ -104,19 +97,39 @@ function Couch(options) {
 	};
 	
 	this.restart = function() {
-		h.setMethod('POST');
-		h.setContent(null);
-		var res = h.getUrl(server+'/_restart');
+		var res = server.$post('/_restart');
 		return response(res, 200);
 	};
 	
 	var Database = function(name, options ) {
-		var _url = server +"/" + encodeURIComponent(name);
+		var _url = server.url +"/" + encodeURIComponent(name);
+		var database = rest_client.resource(server.url +"/" + encodeURIComponent(name));
 		var _db = this;
 		var _bulk_save_cache = [];
 		var opt = Object.merge(options || {}, {
 			bulk_save_cache_limit: 500
 		});
+		
+		BaseResultSet = function(result) {
+			this.hasRows = function() { return (result.rows && result.rows.length>0); };
+			this.__defineGetter__("count", function() { return result.total_rows; });
+			this.__defineGetter__("offset", function() { return result.offset; } );
+			this.__defineGetter__("num_rows", function() { return result.rows.length; });
+			this.__iterator__ = function() {
+				for ( let i = 0; i < result.rows.length; i++ ) {
+					yield result.rows[i];
+				}
+			};
+			this.toString = function() {
+				return result.toJSON();
+			};
+			this.pop = function() { return result.rows.pop(); };
+			this.shift = function() { return result.rows.shift(); };
+			this.reverse = function() {	result.rows = result.rows.reverse(); return result.rows; }; 
+			this.toArray = function() {
+				return result.rows;
+			};
+		};
 		
 		var Document = function(doc) {
 			this.toString = function() {
@@ -125,59 +138,105 @@ function Couch(options) {
 			this.__noSuchMethod__ = function(name, args) {
 				return Document.prototype[name].apply(this, args);
 			};
+			this.constructor = Document;
 			return Object.merge(this, doc);
 		};
+		
+		Document.isDocument = function(doc) {
+			return Object.isObject(doc) && doc.constructor == Document;
+		}
+		
 		Document.prototype = {
-			isNew: function() {
-				return (typeof this._rev == 'undefined');
-			},
+			isNew: function() { return (typeof this._rev == 'undefined'); },
+			isDeleted: function() { return (typeof _deleted == 'undefined'); },
 			id: function() { return this._id || null; },
 			rev: function() { return this._rev || null; },
 			save: function(bulk) {
-				return _db.saveDoc(this, bulk || false);
+				return _db.saveDoc(this, bulk);
 			},
-			destroy: function(bulk) {
-				return _db.deleteDoc(this, bulk || false);
+			remove: function(bulk) {
+				return _db.deleteDoc(this, bulk);
 			},
 			uri: function(append_rev) {
 				var append_rev = append_rev || false;
 				if(this.isNew()) return null;
-				var uri = _url+'/'+encodeURIComponent(this._id);
+				var uri = database.url+'/'+urlencode(this._id);
 				if (append_rev)
-					uri += encodeOptions({
+					uri += params({
 						rev: (typeof append_rev == 'boolean') ? this.rev() : append_rev
 					});
 				return uri;
 			},
-			attachment: function() {
+			attachments: function() {
 				
 			},
-			attach: function(file, options) {
+			attach: function(/*File*/ file, options) {
 				return _db.attachFile(this, file, options);
 			},
 			detach: function() {
 			},
 			revisions: function() {
-				return (this._revs_info) 
-					? this._revs_info 
-					: (bindThisObject(function() {
-						var doc = _db.get(this.id(), {revs_info: 'true' });
-						return (doc && doc.constructor == Document)
-						? this.revisions() : null;
-					},this))();
+				var self = this;
+				return self._revs_info || (function() {
+					try {
+						var doc = _db.get(self._id, {revs_info: 'true' });
+						if (doc && doc.constructor == Document) {
+							if (doc._revs_info) {
+								self._revs_info = doc._revs_info;	
+								return self.revisions();
+							}
+						}
+					} catch(err) {
+						if (err.error !== 'not_found') 
+							throw err;
+					}
+				})()  || null;
 			},
-			rollback: function() {
+			revert: function() {
 				var revs = this.revisions();
-				if (revs && revs.constructor == Array) {
-					
-				}	
+				if (Object.isArray(revs)) {
+					var [current_rev, previous_rev] = [revs[0], revs[1]];
+					if (Object.isObject(previous_rev)) {
+						var previous_doc = _db.get(this._id, {rev: previous_rev.rev});
+						if (Document.isDocument(previous_doc) && previous_rev.status == 'available') {
+							var old_props = [p for(p in this) if (!Function.isFunction(this[p]))];
+							previous_doc._rev = current_rev.rev;
+							var reverted_doc = _db.saveDoc(previous_doc);
+							for each ( p in old_props) delete this[p];
+							return Object.merge(this, reverted_doc);
+						}
+					}
+				}
+				return false;
 			}
+		};
+		
+		Document.ResultRow = function(row) {
+			this.__defineGetter__("id", function() { return row.id; });
+			this.__defineGetter__("key", function() { return row.key; });
+			this.__defineGetter__("doc", function() { return new Document(row.doc); });
+			this.toString = function() {
+				return row.toJSON();
+			};
+			return Object.merge(row,this);
+		};
+		
+		Document.ResultSet = function(result) {
+			var result_set = Object.merge(new BaseResultSet(result), {
+				__iterator__: function() {
+					for ( let i = 0; i < result.rows.length; i++ )
+						yield new Document.ResultRow(result.rows[i]);
+				}
+			});
+			result_set.constructor = Document.ResultSet;
+			return result_set;
 		};
 		
 		var View = function(name) {
 			
 			var [dname, vname] = name.split('/');
-			var _view_url = _url+"/_design/"+encodeURIComponent(dname)+"/_view/"+encodeURIComponent(vname);
+			var _view_url = database.url+"/_design/"+urlencode(dname)+"/_view/"+urlencode(vname);
+			var view = rest_client.resource(_view_url);
 			
 			this.name = function() { return name || 'no_name'; }
 			
@@ -216,19 +275,17 @@ function Couch(options) {
 			};
 			
 			this.fetchAll = function(options) {
-				h.setMethod('GET');	
-				if (options && options['keys']) {
-					h.setMethod('POST');	
-					h.setContent({ keys: options['keys'] }.toJSON());
-					delete options['keys'];
-				}
-				var res = h.getUrl(_view_url + encodeOptions(options));
+				var keys = options && options['keys'];
+				if (keys) delete options['keys'];
+				var res = (keys) 
+					? view.$post(params(options), { content: { keys: keys }.toJSON() })
+					: view.$get(params(options));
 				var result = response(res, 200);
 				return (result) ? new View.ResultSet(result) : result;
 			};
 			
 			this.fetchStreamed = function() {
-				var url = new java.net.URL(_view_url + encodeOptions(options));
+				var url = new java.net.URL(_view_url + params(options));
 				var conn = url.openConnection();
 				conn.setRequestMethod('GET');
 				var input = conn.getInputStream();
@@ -273,7 +330,7 @@ function Couch(options) {
 											case T.START_ARRAY: obj[i] = walk(new Array()); break;
 											case T.START_OBJECT: obj[i] = walk(new Object()); break;
 											case T.END_ARRAY: case T.END_OBJECT:
-												return obj; break;
+												return obj;
 											default: 
 												_fill(token, i, obj);
 										}
@@ -314,7 +371,6 @@ function Couch(options) {
 						};	
 						this.hasPrevious = function() { return (_page>=1); };
 						this.hasNext = function() {
-							//print("page:"+_page+"##pages:"+self.pages());
 							return (_page<=self.pages()) 
 						};
 						var pagerIterator = Iterator({
@@ -369,26 +425,16 @@ function Couch(options) {
 				};
 				return Object.merge(row,this);
 			};
+			
 			View.ResultSet = function(result) {
-				this.hasRows = function() { return (result.rows && result.rows.length>0); };
-				this.count = function() { return result.total_rows; };
-				this.offset = function() { return result.offset;  };
-				
-				this.__iterator__ = function() {
-					for ( let i = 0; i < result.rows.length; i++ ) {
-						yield new View.ResultRow(result.rows[i]);
+				var result_set = Object.merge(new BaseResultSet(result), {
+					__iterator__: function() {
+						for ( let i = 0; i < result.rows.length; i++ )
+							yield new View.ResultRow(result.rows[i]);
 					}
-				};
-				
-				this.toString = function() {
-					return result.toJSON();
-				};
-				this.pop = function() { return result.rows.pop(); };
-				this.shift = function() { return result.rows.shift(); };
-				this.reverse = function() {	result.rows = result.rows.reverse(); return result.rows; }; 
-				this.toArray = function() {
-					return result.rows;
-				};
+				});
+				result_set.constructor = View.ResultSet;
+				return result_set;
 			};
 			
 			View.PagedResultSet = function(result_set) {
@@ -412,18 +458,17 @@ function Couch(options) {
 		this.name = function() {
 			return name;
 		};
+		this.url = function() {
+			return database.url; 
+		};
 		
 		this.info = function() {
-			h.setMethod('GET');
-			h.setContent(null);
-			var res = h.getUrl(_url);
+			var res = database.$get();
 			return response(res, 200);
 		};
 		
 		this.create = function() {
-			h.setMethod('PUT');
-			h.setContent(null);
-			var res = h.getUrl(_url);
+			var res = database.$put();
 			var result = response(res, 201);
 			if (result['ok'])
 				return this;
@@ -431,9 +476,7 @@ function Couch(options) {
 		};
 		
 		this.drop = function() {
-			h.setMethod('DELETE');
-			h.setContent(null);
-			var res = h.getUrl(_url);
+			var res = database.$delete();
 			try {
 				return response(res, 200);
 			} catch(err) {
@@ -457,73 +500,81 @@ function Couch(options) {
 		};
 
 		this.saveDoc = function(doc, bulk, options) {		
-			var bulk = bulk || false;
 			if (bulk) {
         _bulk_save_cache.push(doc);
         if (_bulk_save_cache.length >= opt['bulk_save_cache_limit']) 
 					return this.bulkSave(); 
         return { ok: true };
-      } 
-			var method = (doc._id == undefined) ? 'POST' : 'PUT';
-			h.setMethod(method);
-			h.setContent(doc.toJSON());
-			var res = h.getUrl((method == 'POST') 
-				? _url + encodeOptions(options)
-				: _url + '/'+encodeURIComponent(doc._id) + encodeOptions(options)
-			);
+      }
+			var [method, sub_url]  = (doc._id) 
+				? ['PUT', '/'+urlencode(doc._id)+params(options)] 
+				: ['POST', params(options) ];
+			var res = database.request(method, sub_url,{ 
+				content: doc.toJSON()
+			});
 			var result = response(res, 201);
 			if (result['ok']) {
 				doc._id = result.id;
 				doc._rev = result.rev;
-				return new Document(doc);
+				return Document.isDocument(doc) && doc || new Document(doc);
 			}
 			return result;
 		};
 		
 		this.get = function(doc_id, options) {
 			doc_id += ''; 
-			h.setMethod('GET');
-			h.setContent(null);
-			var res = h.getUrl(_url+ '/'+encodeURIComponent(doc_id) + encodeOptions(options));
+			var res =  database.$get('/'+encodeURIComponent(doc_id) + params(options));
 			var result = response(res, 200);
 			return (result && result['_id']) ? new Document(result) : result;
 		};
 		
-		this.documents = function(doc_ids, options) {
-			options = Object.merge(options || {}, {
+		
+		this.documentsAsResultSet = function(doc_ids, options) {
+			var opt = Object.merge({
 				include_docs: 'true'
+			}, options || {});
+			var res =  database.$post('/_all_docs' + params(opt),{
+				content: { keys: doc_ids }.toJSON(),
+				headers: {'Content-Type': 'application/json' }
 			});
-			h.setMethod('POST');
-			h.setHeader('Content-Type','application/json');
-			h.setContent({ keys: doc_ids }.toJSON());
-			var res = h.getUrl(_url+'/_all_docs' + encodeOptions(options));
-			return response(res, 200);
+			var result = response(res, 200);
+			return (result) ? new Document.ResultSet(result) : result;
 		};
 		
+		this.documents = function(doc_ids, options) {
+			var result_set = this.documentsAsResultSet(doc_ids, options);
+			var gen_iter = function() {
+				return Iterator({
+					__iterator__: function() {
+						for each (let row in result_set)
+							yield row.doc;  
+					}
+				})
+			};
+			return Object.merge(gen_iter(), {
+				toArray:  function() { return [doc for each ( doc in gen_iter())]; },
+				toString: function() { return this.toArray().toJSON(); }
+			});
+		};
+
 		this.compact = function() {
-			h.setMethod('POST');
-			h.setHeader('Content-Type','application/json');
-			h.setContent(null);
-			var res = h.getUrl(_url+'/_compact');
+			var res =  database.$post('/_compact');
 			return response(res, 202);
 		};
 		
 		this.deleteDoc = function(doc, bulk) {
-			var bulk = bulk || false;
 			if (bulk) {
         _bulk_save_cache.push({ _id: doc['_id'], _rev: doc['_rev'], _deleted: true });
 				if (_bulk_save_cache.length >= opt['bulk_save_cache_limit']) 
 					return this.bulkSave(); 
 				return { ok: true };
 			}
-			
-			h.setMethod('DELETE');
-			h.setContent(null);
-			var res = h.getUrl(_url+ '/'+encodeURIComponent(doc._id) + "?rev=" + doc._rev);
+			var res =  database.$delete('/'+encodeURIComponent(doc._id) + "?rev=" + doc._rev);
 			var result = response(res, 200);
+			delete doc._revs_info;
 			doc._rev = result.rev;
 			doc._deleted = true;
-			return result;
+			return doc;
 		};
 		
 		this.bulkSave = function(docs, useUUIDs, atomic) {
@@ -541,16 +592,16 @@ function Couch(options) {
 				});
 				var uuid_count = [docs_with_noids.length, opt['uuid_batch_count']].max();
 				for each (var doc in docs_with_noids) {
-					nextid = couch.nextUUID(uuid_count);
+					nextid = _couch.nextUUID(uuid_count);
 					if (nextid) doc['_id'] = nextid;
 				}
       }
-			h.setMethod('POST');
-			h.setHeader('Content-Type','application/json');
 			var content = { docs: docs};
 			if (atomic) content['all_or_nothing']  = true;
-			h.setContent(content.toJSON());
-			var res = h.getUrl(_url+'/_bulk_docs');
+			var res = database.$post('/_bulk_docs', {
+				content: content.toJSON(),
+				headers: {'Content-Type': 'application/json' }
+			});
 			return response(res, 201);
 		};
 		this.bulkDelete = this.bulkSave;
@@ -566,8 +617,6 @@ function Couch(options) {
 		// One-off queries (eg. views you don't want to save in the CouchDB database)
 		// Temporary views are only good during development.
 		this.slowView = function(funcs, options) {
-			h.setMethod('POST');	
-			h.setHeader('Content-Type','application/json');
 			for (let f in funcs) {
 				if (typeof funcs[f] == 'function')
 					funcs[f] = funcs[f].toString(); 
@@ -576,8 +625,10 @@ function Couch(options) {
 				funcs['keys'] = options['keys'];
 				delete options['keys'];
 			}
-			h.setContent(funcs.toJSON());
-			var res = h.getUrl(_url+'/_temp_view' + encodeOptions(options));
+			var res = database.$post('/_temp_view'+ params(options), {
+				content: funcs.toJSON(),
+				headers: {'Content-Type': 'application/json' }
+			});
 			var result = response(res, 200);
 			return (result) ? new View.ResultSet(result) : result;
 		}
@@ -588,22 +639,19 @@ function Couch(options) {
 		this.import = function() {
 		};
 		
-		
 		this.attachFile = function(doc, file, options) {
 			if (typeof file != 'object' || file.constructor != File)
-				throw "No File";
+				throw new Error("No File");
 			var file_name = file.getName();
 			var data = file.readAll();
-			var opt = Object.merge(options || {}, {
+			var opt = Object.merge({
 				content_type: 'text/plain',
+			},options || {});
+			
+			var res = database.$put('/'+urlencode(doc._id)+'/'+urlencode(file_name)+params({rev:doc._rev}),{
+				content: data.enbase64(),
+				headers: {'Content-Type': opt.content_type}
 			});
-			h.setMethod('PUT');
-			h.setHeader('Content-Type',opt.content_type);
-			h.setContent(data.enbase64());
-			var res = h.getUrl(_url+'/'+encodeURIComponent(doc._id)+'/'
-				+encodeURIComponent(file_name)
-				+encodeOptions({rev:doc._rev})
-			);
 			var result = response(res, 201);
 			doc._id = result.id;
 			doc._rev = result.rev;
@@ -615,13 +663,9 @@ function Couch(options) {
 			};
 			return result;
 		};
-		
+
 		this.detach = function(doc, file_name, options) {
-			h.setMethod('DELETE');
-			var res = h.getUrl(_url+'/'+encodeURIComponent(doc._id)+'/'
-				+encodeURIComponent(file_name)
-				+encodeOptions({rev:doc._rev})
-			);
+			var res = database.$delete('/'+urlencode(doc._id)+'/'+urlencode(file_name)+params({rev:doc._rev}));
 			var result = response(res, 200);
 			doc._id = result.id;
 			doc._rev = result.rev;
@@ -633,7 +677,7 @@ function Couch(options) {
 			if (!doc['_id']) 
 				throw new Error("A Document with an _id attribute is required for copying!");
 			var destionation = (typeof dest == 'object' && dest._id && dest._rev) 
-				?  encodeURIComponent(dest._id)+encodeOptions({rev:dest._rev})
+				?  encodeURIComponent(dest._id)+params({rev:dest._rev})
 				:  dest;
 			h.setRequestSpecialMethod('COPY');
 			h.setContent({ Destination: destionation }.toJSON());
@@ -644,20 +688,19 @@ function Couch(options) {
 		this.replicateFrom = function(otherdb) {
 			if (typeof otherdb != 'object' || otherdb.constructor != Database)
 				throw new Error("Not a Database!");
-			couch.replicate(otherdb.name(), this.name());
+			_couch.replicate(otherdb.name(), this.name());
 		};
 		
 		this.replicateTo = function(otherdb) {
 			if (typeof otherdb != 'object' || otherdb.constructor != Database)
 				throw new Error("Not a Database!");
-			couch.replicate(this.name(), otherdb.name());
+			_couch.replicate(this.name(), otherdb.name());
 		};
 
 	};
+	var urlencode = encodeURIComponent;
 	
-	// Convert a options object to an url query string.
-	// ex: {key:'value',key2:'value2'} becomes '?key="value"&key2="value2"'
-	function encodeOptions(options) {
+	function params(options) {
 		var buf = []
 		if (typeof options == "object" && options !== null) {
 			for (var name in options) {

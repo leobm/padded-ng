@@ -1,3 +1,4 @@
+export('set');
 
 Object.defineProperty(Array.prototype, "max", {
 		value: function() {
@@ -41,3 +42,30 @@ Object.defineProperty(Object, "merge", {
 		return dest;
 	}
 });
+
+// if (value in set(1,2,3,4)) 
+function set()  {
+	var result = {};
+	for (var i = 0; i < arguments.length; i++)
+		result[arguments[i]] = true;
+	return result;
+}
+
+Object.defineProperty(Function, "isFunction", {
+	value: function(fn) {
+		return typeof fn == 'function';
+	}		
+});
+
+Object.defineProperty(Object, "isObject", {
+	value: function(obj) {
+		return typeof obj == 'object';
+	}		
+});
+
+Object.defineProperty(Object, "isArray", {
+		value: function(obj) {
+			return Object.isObject(obj) && obj.constructor == Array;
+		}
+});
+

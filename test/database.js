@@ -13,10 +13,6 @@ testCase.setUp = function() {
 	db.drop(); db.create();
 }
 
-testCase.tearDown = function() {
-	db.drop();
-};
-
 testCase.testName = function () {
 	assertEqual(db.name(), config.database);
 };
@@ -53,11 +49,16 @@ testCase.testDocuments = function () {
 		text: "BBBBBB"
 	});
 	var all_docs = db.documents();
-	assertEqual(typeof all_docs, 'object');
-	assertEqual(all_docs.total_rows, 2);
-	
-	/*print("#################");
-	print(docs.toJSON());
-	print("#################");*/
+	for each(doc in all_docs)
+		assertEqual(typeof doc, 'object');
+	assertEqual(2, all_docs.toArray().length);
+	var all_doc_as_set = db.documentsAsResultSet();
+	for each(row in all_doc_as_set) {
+		assertEqual(typeof row, 'object');
+		assertNotNull(row.id);
+		assertNotNull(row.key);
+		assertNotNull(row.doc);
+	}
+	assertEqual(2,all_doc_as_set.toArray().length);
 };
 

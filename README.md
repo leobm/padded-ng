@@ -20,7 +20,7 @@
 		
 		var doc1 = db.get("1");
 		print(doc1);
-		doc1.destroy();
+		doc1.remove();
 	} catch(ex) {
 			if (ex.constructor == CouchDbError)
 				print("error:"+ex.error + " reason:"+ex.reason);
@@ -49,7 +49,7 @@ try {
 var db = couch.db('test');
 db.drop();
 db.create().transaction(function() {
-	Array.every("ABCDEFGHIJKLMNOPQRSTUVWXYZ", bind(function(c) {				
+	Array.every("ABCDEFGHIJKLMNOPQRSTUVWXYZ", bindThisObject(function(c) {				
 			return this.saveDoc({
 				character: c, 
 			}, true);

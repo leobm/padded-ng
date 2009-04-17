@@ -4,6 +4,8 @@ function run() {
 	var suite = new TestSuite('Padded-ng');
 	suite.addTest('test/server');
 	suite.addTest('test/database');
+	suite.addTest('test/document');
+	suite.addTest('test/view');
   suite.run();
 }
 
